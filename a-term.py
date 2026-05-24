@@ -471,7 +471,11 @@ def run_gui(args: argparse.Namespace) -> int:
 
     ttk.Label(top, text="Baud:").pack(side=tk.LEFT)
     baud_var = tk.StringVar(value=str(cfg["baud"]))
-    baud_entry = ttk.Entry(top, textvariable=baud_var, width=8)
+    common_bauds = ["300", "1200", "2400", "4800", "9600", "19200", "38400",
+                    "57600", "74880", "115200", "230400", "250000", "460800",
+                    "500000", "921600", "1000000", "2000000"]
+    baud_entry = ttk.Combobox(top, textvariable=baud_var,
+                              values=common_bauds, width=10)
     baud_entry.pack(side=tk.LEFT, padx=(4, 8))
 
     apply_btn = ttk.Button(top, text="Apply")
@@ -585,6 +589,8 @@ def run_gui(args: argparse.Namespace) -> int:
     send_entry.bind("<Return>", do_send)
     device_combo.bind("<Return>", apply_changes)
     baud_entry.bind("<Return>", apply_changes)
+    baud_entry.bind("<<ComboboxSelected>>", apply_changes)
+    device_combo.bind("<<ComboboxSelected>>", apply_changes)
 
     # Menu
     menubar = tk.Menu(root)
