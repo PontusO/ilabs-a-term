@@ -520,7 +520,11 @@ def run_gui(args: argparse.Namespace) -> int:
         nonlocal line_start
         if not data:
             return
-        text = data.decode("utf-8", errors="replace")
+        # Tk Text renders \r as a tofu glyph; the CRs in CRLF line endings
+        # (Arduino's Serial.println) are display noise. Log file keeps them.
+        text = data.decode("utf-8", errors="replace").replace("\r", "")
+        if not text:
+            return
         rx_text.config(state=tk.NORMAL)
         try:
             if not ts_var.get():
