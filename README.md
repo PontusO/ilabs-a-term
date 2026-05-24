@@ -45,6 +45,24 @@ Options:
 | `--no-timestamps` | _on_ | Disable the `[ ms ] ` prefix on each received line |
 | `--clock` | _off_ | Use `[HH:MM:SS.mmm]` wall-clock format instead of ms-since-start |
 | `--list` | — | List devices and exit |
+| `--gui` | _off_ | Launch the Tkinter GUI instead of the CLI |
+
+## GUI
+
+```bash
+./a-term.py --gui            # empty window, pick device from dropdown
+./a-term.py --gui Arduino    # opens connected to first match
+```
+
+Layout: device combobox + baud entry + Apply button + status indicator on
+top, scrolling RX area in the middle, send entry + EOL dropdown + Send
+button on the bottom. Press Enter in the send field to transmit. Timestamps
+and clock-format are toggleable from the **Options** menu; **File →
+Refresh devices** re-scans `/dev/serial/by-id/`. Closing the window stops
+the supervisor.
+
+Requires `python3-tk` on Debian/Ubuntu (it's part of the stdlib but ships
+as a separate package on Debian-family distros).
 
 Type a line, press Enter to send. Ctrl-C exits.
 
