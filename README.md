@@ -111,6 +111,14 @@ without disconnecting mid-edit). Closing the window stops the supervisor.
 - Carriage returns (`\r` in `\r\n` line endings) are stripped from the GUI
   display but kept in the `--log` file. The CLI passes them through to the
   terminal driver.
+- **Yields the port to uploaders.** Every ~100 ms while connected, `a-term`
+  scans `/proc/*/fd` for other processes opening the same tty. If avrdude
+  (or bossac, esptool, etc.) grabs the port, `a-term` closes its handle and
+  enters a *holding* state until the uploader releases, then reattaches
+  automatically. The status indicator turns cyan during the upload and the
+  contender's process name is shown. There's a small race window (~100 ms)
+  where a few sync bytes may be split, but upload protocols retry through
+  this.
 
 ## Limitations
 

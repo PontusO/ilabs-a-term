@@ -25,7 +25,46 @@ except ImportError:
 
 BY_ID_DIR = "/dev/serial/by-id"
 POLL_INTERVAL = 0.25
+SCAN_INTERVAL = 0.1
 EOL_MAP = {"none": b"", "lf": b"\n", "cr": b"\r", "crlf": b"\r\n"}
+
+
+def find_other_opener(tty_real_path: str) -> Optional[tuple[str, str]]:
+    """Return (pid, comm) of the first non-self process holding tty_real_path open.
+
+    Scans /proc/*/fd symlinks. Used to detect uploaders (avrdude, bossac, ...)
+    grabbing the port so we can release it before they get garbled bytes.
+    """
+    our_pid_s = str(os.getpid())
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    for pid in entries:
+        if not pid.isdigit() or pid == our_pid_s:
+            continue
+        fd_dir = f"/proc/{pid}/fd"
+        try:
+            fds = os.listdir(fd_dir)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(f"{fd_dir}/{fd}")
+            except OSError:
+                continue
+            try:
+                resolved = os.path.realpath(target)
+            except OSError:
+                continue
+            if resolved == tty_real_path:
+                try:
+                    with open(f"/proc/{pid}/comm") as f:
+                        comm = f.read().strip() or "?"
+                except OSError:
+                    comm = "?"
+                return (pid, comm)
+    return None
 
 
 def list_by_id() -> list[tuple[str, str]]:
@@ -146,9 +185,11 @@ def main() -> int:
     # locking, we follow that specific device for the rest of the session,
     # even across cable pulls and uploads.
     target_path: Optional[str] = initial_matches[0] if initial_matches else None
+    target_real: Optional[str] = None
     state = "WAITING"
     ser: Optional[serial.Serial] = None
     last_open_error: Optional[str] = None
+    last_scan = 0.0
 
     start_ts = time.monotonic()
     line_start = True
@@ -210,10 +251,10 @@ def main() -> int:
                         state = "CONNECTED"
                         last_open_error = None
                         line_start = True
-                        real = os.path.realpath(target_path)
+                        target_real = os.path.realpath(target_path)
                         print_status(
                             f"connected: {os.path.basename(target_path)} "
-                            f"-> {real} @ {args.baud}")
+                            f"-> {target_real} @ {args.baud}")
                     except (serial.SerialException, OSError) as e:
                         msg = str(e)
                         if msg != last_open_error:
@@ -227,6 +268,33 @@ def main() -> int:
                     state = "WAITING"
                     print_status("disconnected, waiting for reappearance...")
                     continue
+
+                now = time.monotonic()
+                if target_real and now - last_scan >= SCAN_INTERVAL:
+                    last_scan = now
+                    other = find_other_opener(target_real)
+                    if other is not None:
+                        pid, comm = other
+                        _close(ser)
+                        ser = None
+                        state = "HOLDING"
+                        print_status(
+                            f"released to {comm} (PID {pid}), waiting...")
+                        continue
+
+            elif state == "HOLDING":
+                if target_path is None or not os.path.exists(target_path):
+                    state = "WAITING"
+                    print_status("device gone, waiting for reappearance...")
+                    continue
+                now = time.monotonic()
+                if target_real and now - last_scan >= SCAN_INTERVAL:
+                    last_scan = now
+                    if find_other_opener(target_real) is None:
+                        state = "WAITING"
+                        last_open_error = None
+                        print_status("port free again, resuming...")
+                        continue
 
             fds = [sys.stdin.fileno(), r_sig]
             if state == "CONNECTED" and ser is not None:
@@ -318,10 +386,12 @@ def run_gui(args: argparse.Namespace) -> int:
     def supervisor():
         ser: Optional[serial.Serial] = None
         target_path: Optional[str] = None
+        target_real: Optional[str] = None
         state = "WAITING"
         last_open_error: Optional[str] = None
         last_substring: Optional[str] = None
         last_baud: Optional[int] = None
+        last_scan = 0.0
         log_fp = None
         log_path_open = None
 
@@ -391,12 +461,12 @@ def run_gui(args: argparse.Namespace) -> int:
                                                 timeout=0, exclusive=False)
                             state = "CONNECTED"
                             last_open_error = None
-                            real = os.path.realpath(target_path)
+                            target_real = os.path.realpath(target_path)
                             rx_q.put(RESET_MARKER)
                             status_q.put((
                                 "connected",
                                 f"connected: {os.path.basename(target_path)} "
-                                f"-> {real} @ {baud}"))
+                                f"-> {target_real} @ {baud}"))
                         except (serial.SerialException, OSError) as e:
                             msg = str(e)
                             if msg != last_open_error:
@@ -410,6 +480,35 @@ def run_gui(args: argparse.Namespace) -> int:
                         status_q.put(("waiting",
                                       "disconnected, waiting..."))
                         continue
+                    now = time.monotonic()
+                    if target_real and now - last_scan >= SCAN_INTERVAL:
+                        last_scan = now
+                        other = find_other_opener(target_real)
+                        if other is not None:
+                            pid, comm = other
+                            close_ser()
+                            state = "HOLDING"
+                            status_q.put((
+                                "holding",
+                                f"released to {comm} (PID {pid})..."))
+                            continue
+
+                elif state == "HOLDING":
+                    if target_path is None or not os.path.exists(target_path):
+                        state = "WAITING"
+                        status_q.put(("waiting",
+                                      "device gone, waiting..."))
+                        continue
+                    now = time.monotonic()
+                    if target_real and now - last_scan >= SCAN_INTERVAL:
+                        last_scan = now
+                        if find_other_opener(target_real) is None:
+                            state = "WAITING"
+                            last_open_error = None
+                            status_q.put(("waiting", "port free, resuming..."))
+                            continue
+                    stop_event.wait(0.05)
+                    continue
 
                 # Drain pending TX
                 while True:
@@ -614,6 +713,7 @@ def run_gui(args: argparse.Namespace) -> int:
         "idle": "#666",
         "waiting": "#a60",
         "connected": "#0a0",
+        "holding": "#08a",
         "error": "#a00",
     }
 
