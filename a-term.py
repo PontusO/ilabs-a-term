@@ -79,8 +79,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--log", metavar="FILE",
                    help="Append received bytes to FILE (binary, unbuffered)")
     p.add_argument("--no-timestamps", dest="timestamps", action="store_false",
-                   help="Disable [ms] timestamp prefix on each received line "
+                   help="Disable timestamp prefix on each received line "
                         "(default: enabled)")
+    p.add_argument("--clock", action="store_true",
+                   help="Use wall-clock HH:MM:SS.mmm format instead of "
+                        "milliseconds since start")
     p.add_argument("--list", action="store_true",
                    help="List devices in /dev/serial/by-id/ and exit")
     return p.parse_args()
@@ -145,6 +148,15 @@ def main() -> int:
     start_ts = time.monotonic()
     line_start = True
 
+    def line_prefix() -> bytes:
+        if args.clock:
+            now = time.time()
+            ms = int((now - int(now)) * 1000)
+            return (time.strftime("[%H:%M:%S", time.localtime(now))
+                    + f".{ms:03d}] ").encode("ascii")
+        ms = int((time.monotonic() - start_ts) * 1000)
+        return f"[{ms:>9}] ".encode("ascii")
+
     def emit_rx(data: bytes) -> None:
         nonlocal line_start
         if not data:
@@ -158,8 +170,7 @@ def main() -> int:
         n = len(data)
         while i < n:
             if line_start:
-                ms = int((time.monotonic() - start_ts) * 1000)
-                out.write(f"[{ms:>7}] ".encode("ascii"))
+                out.write(line_prefix())
                 line_start = False
             nl = data.find(b"\n", i)
             if nl == -1:
