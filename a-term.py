@@ -12,6 +12,7 @@ import os
 import select
 import signal
 import sys
+import time
 from typing import Optional
 
 try:
@@ -77,6 +78,9 @@ def parse_args() -> argparse.Namespace:
                    help="Line ending appended to outgoing lines (default: lf)")
     p.add_argument("--log", metavar="FILE",
                    help="Append received bytes to FILE (binary, unbuffered)")
+    p.add_argument("--no-timestamps", dest="timestamps", action="store_false",
+                   help="Disable [ms] timestamp prefix on each received line "
+                        "(default: enabled)")
     p.add_argument("--list", action="store_true",
                    help="List devices in /dev/serial/by-id/ and exit")
     return p.parse_args()
@@ -138,6 +142,34 @@ def main() -> int:
     ser: Optional[serial.Serial] = None
     last_open_error: Optional[str] = None
 
+    start_ts = time.monotonic()
+    line_start = True
+
+    def emit_rx(data: bytes) -> None:
+        nonlocal line_start
+        if not data:
+            return
+        out = sys.stdout.buffer
+        if not args.timestamps:
+            out.write(data)
+            sys.stdout.flush()
+            return
+        i = 0
+        n = len(data)
+        while i < n:
+            if line_start:
+                ms = int((time.monotonic() - start_ts) * 1000)
+                out.write(f"[{ms:>7}] ".encode("ascii"))
+                line_start = False
+            nl = data.find(b"\n", i)
+            if nl == -1:
+                out.write(data[i:])
+                break
+            out.write(data[i:nl + 1])
+            line_start = True
+            i = nl + 1
+        sys.stdout.flush()
+
     print_status(f"waiting for device matching '{args.substring}'...")
 
     try:
@@ -161,6 +193,7 @@ def main() -> int:
                                             timeout=0, exclusive=False)
                         state = "CONNECTED"
                         last_open_error = None
+                        line_start = True
                         real = os.path.realpath(target_path)
                         print_status(
                             f"connected: {os.path.basename(target_path)} "
@@ -219,8 +252,7 @@ def main() -> int:
                     data = os.read(ser.fileno(), 4096)
                     if not data:
                         raise EOFError
-                    sys.stdout.buffer.write(data)
-                    sys.stdout.flush()
+                    emit_rx(data)
                     if log_fp is not None:
                         log_fp.write(data)
                 except (OSError, serial.SerialException, EOFError):

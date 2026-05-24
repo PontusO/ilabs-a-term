@@ -41,7 +41,8 @@ Options:
 |---|---|---|
 | `--baud N` | `115200` | Baud rate |
 | `--eol {none,lf,cr,crlf}` | `lf` | Line ending appended on send |
-| `--log FILE` | _off_ | Append received bytes to FILE (binary) |
+| `--log FILE` | _off_ | Append received bytes to FILE (binary, untimestamped) |
+| `--no-timestamps` | _on_ | Disable the `[   ms] ` prefix on each received line |
 | `--list` | — | List devices and exit |
 
 Type a line, press Enter to send. Ctrl-C exits.
