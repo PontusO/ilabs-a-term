@@ -73,6 +73,8 @@ state in a colored indicator):
 ```
 [a-term] waiting for device matching 'Arduino'...
 [a-term] connected: usb-Arduino_LLC_Arduino_Uno_...-if00 -> /dev/ttyACM0 @ 115200
+[a-term] released to avrdude (PID 12345), waiting...
+[a-term] port free again, resuming...
 [a-term] disconnected, waiting for reappearance...
 ```
 
@@ -87,7 +89,8 @@ Layout:
 
 - **Top bar** — device combobox, baud combobox (common rates pre-filled,
   editable for custom), **Apply** button, color-coded status indicator
-  (gray idle / amber waiting / green connected / red error).
+  (gray idle / amber waiting / green connected / cyan holding for an
+  uploader / red error).
 - **Middle** — scrolling RX area, optionally prefixed with the same
   timestamp formats as the CLI.
 - **Bottom bar** — send entry, EOL dropdown, **Send** button. Press Enter
