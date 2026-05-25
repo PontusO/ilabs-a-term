@@ -88,13 +88,14 @@ state in a colored indicator):
 Layout:
 
 - **Top bar** — device combobox, baud combobox (common rates pre-filled,
-  editable for custom), **Apply** button, color-coded status indicator
-  (gray idle / amber waiting / green connected / cyan holding for an
-  uploader / red error).
+  editable for custom), **Apply** button.
 - **Middle** — scrolling RX area, optionally prefixed with the same
   timestamp formats as the CLI.
-- **Bottom bar** — send entry, EOL dropdown, **Send** button. Press Enter
+- **Send bar** — send entry, EOL dropdown, **Send** button. Press Enter
   in the send field to transmit.
+- **Status bar** — full-width strip at the very bottom showing the
+  current state, color-coded (gray idle / amber waiting / green connected
+  / cyan holding for an uploader / red error).
 - **Options menu** — toggle timestamps, toggle wall-clock format, Clear.
 - **File menu** — Refresh devices (re-scan `/dev/serial/by-id/`), Quit.
 

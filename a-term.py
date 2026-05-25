@@ -580,10 +580,6 @@ def run_gui(args: argparse.Namespace) -> int:
     apply_btn = ttk.Button(top, text="Apply")
     apply_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-    status_var = tk.StringVar(value="idle")
-    status_lbl = ttk.Label(top, textvariable=status_var, foreground="#666")
-    status_lbl.pack(side=tk.LEFT, padx=(8, 0))
-
     rx_text = ScrolledText(root, wrap=tk.NONE,
                            font=("monospace", 10), state=tk.DISABLED,
                            background="#fafafa", foreground="#222")
@@ -604,6 +600,16 @@ def run_gui(args: argparse.Namespace) -> int:
 
     send_btn = ttk.Button(bottom, text="Send")
     send_btn.pack(side=tk.LEFT)
+
+    ttk.Separator(root, orient=tk.HORIZONTAL).pack(fill=tk.X)
+
+    status_bar = ttk.Frame(root)
+    status_bar.pack(fill=tk.X)
+    status_var = tk.StringVar(value="idle")
+    status_lbl = ttk.Label(status_bar, textvariable=status_var,
+                           foreground="#666", anchor=tk.W,
+                           padding=(8, 2, 8, 2))
+    status_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
     ts_var = tk.BooleanVar(value=args.timestamps)
     clock_var = tk.BooleanVar(value=args.clock)
