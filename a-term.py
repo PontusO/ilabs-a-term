@@ -377,6 +377,7 @@ def run_gui(args: argparse.Namespace) -> int:
         "baud": args.baud,
         "eol": EOL_MAP[args.eol],
         "log_path": args.log,
+        "paused": False,
     }
 
     start_ts = time.monotonic()
@@ -391,6 +392,7 @@ def run_gui(args: argparse.Namespace) -> int:
         last_open_error: Optional[str] = None
         last_substring: Optional[str] = None
         last_baud: Optional[int] = None
+        last_paused = False
         last_scan = 0.0
         log_fp = None
         log_path_open = None
@@ -410,6 +412,7 @@ def run_gui(args: argparse.Namespace) -> int:
                     substring = cfg["substring"]
                     baud = cfg["baud"]
                     log_path = cfg["log_path"]
+                    paused = cfg["paused"]
 
                 if log_path != log_path_open:
                     if log_fp is not None:
@@ -437,6 +440,25 @@ def run_gui(args: argparse.Namespace) -> int:
                                       f"waiting for '{substring}'..."))
                     else:
                         status_q.put(("idle", "no device selected"))
+
+                if paused != last_paused:
+                    last_paused = paused
+                    if paused:
+                        close_ser()
+                        target_path = None
+                        state = "WAITING"
+                        last_open_error = None
+                        status_q.put(("paused", "paused — port released"))
+                    else:
+                        last_open_error = None
+                        if substring:
+                            status_q.put(("waiting",
+                                          f"resuming, waiting for "
+                                          f"'{substring}'..."))
+
+                if paused:
+                    stop_event.wait(0.25)
+                    continue
 
                 if not substring:
                     stop_event.wait(0.25)
@@ -578,7 +600,13 @@ def run_gui(args: argparse.Namespace) -> int:
     baud_entry.pack(side=tk.LEFT, padx=(4, 8))
 
     apply_btn = ttk.Button(top, text="Apply")
-    apply_btn.pack(side=tk.LEFT, padx=(0, 8))
+    apply_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+    pause_btn = ttk.Button(top, text="Pause")
+    pause_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+    clear_btn = ttk.Button(top, text="Clear")
+    clear_btn.pack(side=tk.LEFT, padx=(0, 8))
 
     rx_text = ScrolledText(root, wrap=tk.NONE,
                            font=("monospace", 10), state=tk.DISABLED,
@@ -663,6 +691,27 @@ def run_gui(args: argparse.Namespace) -> int:
         rx_text.config(state=tk.DISABLED)
         line_start = True
 
+    def copy_selection() -> None:
+        try:
+            text = rx_text.get(tk.SEL_FIRST, tk.SEL_LAST)
+        except tk.TclError:
+            return
+        root.clipboard_clear()
+        root.clipboard_append(text)
+
+    rx_menu = tk.Menu(rx_text, tearoff=0)
+    rx_menu.add_command(label="Copy", command=copy_selection)
+    rx_menu.add_separator()
+    rx_menu.add_command(label="Clear", command=clear_rx)
+
+    def show_rx_menu(event: "tk.Event") -> None:
+        has_sel = bool(rx_text.tag_ranges(tk.SEL))
+        rx_menu.entryconfig("Copy",
+                            state=tk.NORMAL if has_sel else tk.DISABLED)
+        rx_menu.tk_popup(event.x_root, event.y_root)
+
+    rx_text.bind("<Button-3>", show_rx_menu)
+
     def refresh_devices() -> None:
         device_combo["values"] = [os.path.basename(p)
                                   for p, _ in list_by_id()]
@@ -682,6 +731,12 @@ def run_gui(args: argparse.Namespace) -> int:
             cfg["baud"] = baud_val
         line_start = True
 
+    def toggle_pause(*_: object) -> None:
+        with cfg_lock:
+            cfg["paused"] = not cfg["paused"]
+            now_paused = cfg["paused"]
+        pause_btn.config(text="Resume" if now_paused else "Pause")
+
     def do_send(*_: object) -> None:
         text = send_var.get()
         eol_bytes = EOL_MAP[eol_var.get()]
@@ -690,12 +745,15 @@ def run_gui(args: argparse.Namespace) -> int:
         send_var.set("")
 
     apply_btn.config(command=apply_changes)
+    pause_btn.config(command=toggle_pause)
+    clear_btn.config(command=clear_rx)
     send_btn.config(command=do_send)
     send_entry.bind("<Return>", do_send)
     device_combo.bind("<Return>", apply_changes)
     baud_entry.bind("<Return>", apply_changes)
     baud_entry.bind("<<ComboboxSelected>>", apply_changes)
     device_combo.bind("<<ComboboxSelected>>", apply_changes)
+    device_combo.bind("<Button-1>", lambda _e: refresh_devices())
 
     # Menu
     menubar = tk.Menu(root)
@@ -720,6 +778,7 @@ def run_gui(args: argparse.Namespace) -> int:
         "waiting": "#a60",
         "connected": "#0a0",
         "holding": "#08a",
+        "paused": "#86a",
         "error": "#a00",
     }
 
