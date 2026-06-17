@@ -358,7 +358,6 @@ def run_gui(args: argparse.Namespace) -> int:
     try:
         import tkinter as tk
         from tkinter import ttk
-        from tkinter.scrolledtext import ScrolledText
     except ImportError:
         print("a-term: tkinter not available. On Debian/Ubuntu: "
               "sudo apt install python3-tk", file=sys.stderr)
@@ -399,12 +398,32 @@ def run_gui(args: argparse.Namespace) -> int:
 
         def close_ser():
             nonlocal ser
-            if ser is not None:
-                try:
-                    ser.close()
-                except Exception:
-                    pass
-                ser = None
+            if ser is None:
+                return
+            # Drain whatever the kernel still has buffered before letting
+            # go of the FD. When the MCU's USB CDC re-enumerates after the
+            # bootloader hands off to the app, the by-id path briefly
+            # vanishes and we close — without this drain, any output the
+            # MCU emitted right before the reset is discarded with the FD.
+            try:
+                fd = ser.fileno()
+                while True:
+                    r, _, _ = select.select([fd], [], [], 0)
+                    if not r:
+                        break
+                    data = os.read(fd, 4096)
+                    if not data:
+                        break
+                    rx_q.put(data)
+                    if log_fp is not None:
+                        log_fp.write(data)
+            except (OSError, serial.SerialException, ValueError):
+                pass
+            try:
+                ser.close()
+            except Exception:
+                pass
+            ser = None
 
         try:
             while not stop_event.is_set():
@@ -580,7 +599,7 @@ def run_gui(args: argparse.Namespace) -> int:
     # ── Build window ─────────────────────────────────────────────────
     root = tk.Tk()
     root.title("a-term")
-    root.geometry("960x600")
+    root.geometry("1100x600")
 
     top = ttk.Frame(root, padding=(8, 6, 8, 4))
     top.pack(fill=tk.X)
@@ -608,10 +627,20 @@ def run_gui(args: argparse.Namespace) -> int:
     clear_btn = ttk.Button(top, text="Clear")
     clear_btn.pack(side=tk.LEFT, padx=(0, 8))
 
-    rx_text = ScrolledText(root, wrap=tk.NONE,
-                           font=("monospace", 10), state=tk.DISABLED,
-                           background="#fafafa", foreground="#222")
-    rx_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+    rx_frame = ttk.Frame(root)
+    rx_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+    rx_yscroll = ttk.Scrollbar(rx_frame, orient=tk.VERTICAL)
+    rx_xscroll = ttk.Scrollbar(rx_frame, orient=tk.HORIZONTAL)
+    rx_text = tk.Text(rx_frame, wrap=tk.NONE,
+                      font=("monospace", 10), state=tk.DISABLED,
+                      background="#fafafa", foreground="#222",
+                      yscrollcommand=rx_yscroll.set,
+                      xscrollcommand=rx_xscroll.set)
+    rx_yscroll.config(command=rx_text.yview)
+    rx_xscroll.config(command=rx_text.xview)
+    rx_yscroll.pack(side=tk.RIGHT, fill=tk.Y)
+    rx_xscroll.pack(side=tk.BOTTOM, fill=tk.X)
+    rx_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     bottom = ttk.Frame(root, padding=(8, 4, 8, 8))
     bottom.pack(fill=tk.X)
@@ -641,8 +670,11 @@ def run_gui(args: argparse.Namespace) -> int:
 
     ts_var = tk.BooleanVar(value=args.timestamps)
     clock_var = tk.BooleanVar(value=args.clock)
-
-    line_start = True
+    freeze_scroll_var = tk.BooleanVar(value=False)
+    freeze_chk = ttk.Checkbutton(top, text="Freeze scroll",
+                                 variable=freeze_scroll_var)
+    freeze_chk.pack(side=tk.LEFT, padx=(0, 8))
+    no_blanks_var = tk.BooleanVar(value=False)
 
     def line_prefix() -> str:
         if clock_var.get():
@@ -653,43 +685,74 @@ def run_gui(args: argparse.Namespace) -> int:
         ms = int((time.monotonic() - start_ts) * 1000)
         return f"[{ms:>9}] "
 
+    # Tracks whether the current widget line has any content. Updated
+    # immediately after every insert so it cannot drift from the actual
+    # widget state. A fresh, empty line means the next non-empty char gets a
+    # timestamp prefix.
+    line_buffer_empty = True
+
     def append_rx(data: bytes) -> None:
-        nonlocal line_start
+        nonlocal line_buffer_empty
         if not data:
             return
-        # Tk Text renders \r as a tofu glyph; the CRs in CRLF line endings
-        # (Arduino's Serial.println) are display noise. Log file keeps them.
-        text = data.decode("utf-8", errors="replace").replace("\r", "")
+        # Tk Text renders \r as a tofu glyph and does not treat it as a line
+        # break. Normalise CRLF, LFCR, and lone CR to LF so devices that use
+        # any of those endings display one line per record. Also strip NUL
+        # bytes — some bootloaders emit them next to line terminators, and
+        # the underlying Tcl treats embedded \x00 as a C-string terminator,
+        # silently truncating everything past the NUL on insert. The log
+        # file keeps the original bytes.
+        text = (data.decode("utf-8", errors="replace")
+                    .replace("\r\n", "\n")
+                    .replace("\n\r", "\n")
+                    .replace("\r", "\n")
+                    .replace("\x00", ""))
+        if no_blanks_var.get():
+            while "\n\n" in text:
+                text = text.replace("\n\n", "\n")
         if not text:
             return
         rx_text.config(state=tk.NORMAL)
         try:
             if not ts_var.get():
                 rx_text.insert(tk.END, text)
+                line_buffer_empty = text.endswith("\n")
             else:
+                # Build the full insertion string first, then write it once.
+                # Multiple small inserts give Tk room to interleave events
+                # between the prefix and its content, which has been a
+                # recurring source of subtle rendering bugs.
+                out: list[str] = []
                 i = 0
                 n = len(text)
                 while i < n:
-                    if line_start:
-                        rx_text.insert(tk.END, line_prefix())
-                        line_start = False
                     nl = text.find("\n", i)
                     if nl == -1:
-                        rx_text.insert(tk.END, text[i:])
+                        chunk = text[i:]
+                        if line_buffer_empty:
+                            out.append(line_prefix())
+                        out.append(chunk)
+                        line_buffer_empty = False
                         break
-                    rx_text.insert(tk.END, text[i:nl + 1])
-                    line_start = True
+                    chunk = text[i:nl]
+                    if line_buffer_empty and chunk:
+                        out.append(line_prefix())
+                    out.append(chunk + "\n")
+                    line_buffer_empty = True
                     i = nl + 1
-            rx_text.see(tk.END)
+                if out:
+                    rx_text.insert(tk.END, "".join(out))
+            if not freeze_scroll_var.get():
+                rx_text.see(tk.END)
         finally:
             rx_text.config(state=tk.DISABLED)
 
     def clear_rx() -> None:
-        nonlocal line_start
+        nonlocal line_buffer_empty
         rx_text.config(state=tk.NORMAL)
         rx_text.delete("1.0", tk.END)
         rx_text.config(state=tk.DISABLED)
-        line_start = True
+        line_buffer_empty = True
 
     def copy_selection() -> None:
         try:
@@ -717,7 +780,6 @@ def run_gui(args: argparse.Namespace) -> int:
                                   for p, _ in list_by_id()]
 
     def apply_changes(*_: object) -> None:
-        nonlocal line_start
         try:
             baud_val = int(baud_var.get())
             if baud_val <= 0:
@@ -729,7 +791,6 @@ def run_gui(args: argparse.Namespace) -> int:
         with cfg_lock:
             cfg["substring"] = device_var.get().strip()
             cfg["baud"] = baud_val
-        line_start = True
 
     def toggle_pause(*_: object) -> None:
         with cfg_lock:
@@ -766,6 +827,10 @@ def run_gui(args: argparse.Namespace) -> int:
     options_menu = tk.Menu(menubar, tearoff=0)
     options_menu.add_checkbutton(label="Show timestamps", variable=ts_var)
     options_menu.add_checkbutton(label="Wall-clock format", variable=clock_var)
+    options_menu.add_checkbutton(label="Freeze scroll",
+                                 variable=freeze_scroll_var)
+    options_menu.add_checkbutton(label="Suppress blank lines",
+                                 variable=no_blanks_var)
     options_menu.add_separator()
     options_menu.add_command(label="Clear", command=clear_rx)
     menubar.add_cascade(label="Options", menu=options_menu)
@@ -783,7 +848,7 @@ def run_gui(args: argparse.Namespace) -> int:
     }
 
     def drain() -> None:
-        nonlocal line_start
+        nonlocal line_buffer_empty
         try:
             while True:
                 kind, msg = status_q.get_nowait()
@@ -800,7 +865,14 @@ def run_gui(args: argparse.Namespace) -> int:
                     if pending:
                         append_rx(b"".join(pending))
                         pending = []
-                    line_start = True
+                    # If the previous chunk left us mid-line, terminate it so
+                    # the reconnect's prefix shows on a fresh line instead of
+                    # being appended to the dangling content.
+                    if not line_buffer_empty:
+                        rx_text.config(state=tk.NORMAL)
+                        rx_text.insert(tk.END, "\n")
+                        rx_text.config(state=tk.DISABLED)
+                        line_buffer_empty = True
                 else:
                     pending.append(d)
         except queue.Empty:
