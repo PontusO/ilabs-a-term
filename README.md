@@ -29,6 +29,24 @@ sudo apt install python3-tk        # Debian / Ubuntu
 Your user needs read/write on the tty device — on most distros that means
 membership in the `dialout` (or `uucp`) group.
 
+### Desktop launcher
+
+To install `a-term` as a launchable app (application-menu entry plus an
+`a-term` command on your PATH), run:
+
+```bash
+./install.sh                 # per-user, no root (~/.local)
+sudo ./install.sh --system   # all users (/usr/local, /usr/share)
+```
+
+This copies `a-term.py` to `a-term`, installs `a-term.desktop`, and warns if
+`pyserial` or `python3-tk` are missing. The menu entry launches the GUI.
+Remove it again with:
+
+```bash
+./install.sh --uninstall     # add --system if that's how you installed it
+```
+
 ## CLI
 
 List available USB-serial devices:
@@ -92,12 +110,24 @@ Layout:
 - **Middle** — scrolling RX area, optionally prefixed with the same
   timestamp formats as the CLI.
 - **Send bar** — send entry, EOL dropdown, **Send** button. Press Enter
-  in the send field to transmit.
+  in the send field to transmit. **Up** / **Down** step through the last 50
+  sent lines, shell-style: Up walks back into history, Down walks forward and
+  restores whatever you were typing when you started browsing. Blank lines and
+  immediate repeats are not recorded.
 - **Status bar** — full-width strip at the very bottom showing the
   current state, color-coded (gray idle / amber waiting / green connected
   / cyan holding for an uploader / red error).
 - **Options menu** — toggle timestamps, toggle wall-clock format, Clear.
+- **Edit menu** — Find... (**Ctrl+F**).
 - **File menu** — Refresh devices (re-scan `/dev/serial/by-id/`), Quit.
+
+Press **Ctrl+F** (or **Edit → Find...**) to open the find bar above the send
+row. It highlights every match in the RX area as you type, shows a `current/
+total` counter, and parks the view on the current hit. **Enter** / **▶** jumps
+to the next match, **Shift+Enter** / **◀** to the previous (both wrap around),
+**Match case** toggles case sensitivity, and **Esc** or **✕** closes the bar
+and clears the highlights. If text is selected when you open it, that
+selection prefills the query.
 
 Picking a different device or baud from the dropdowns auto-applies. Typing
 a custom value requires Enter or the Apply button (so you can fix typos

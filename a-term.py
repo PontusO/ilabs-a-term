@@ -27,6 +27,7 @@ BY_ID_DIR = "/dev/serial/by-id"
 POLL_INTERVAL = 0.25
 SCAN_INTERVAL = 0.1
 EOL_MAP = {"none": b"", "lf": b"\n", "cr": b"\r", "crlf": b"\r\n"}
+HISTORY_MAX = 50  # GUI send-line history depth (Up/Down in the send field)
 
 
 def find_other_opener(tty_real_path: str) -> Optional[tuple[str, str]]:
@@ -775,6 +776,132 @@ def run_gui(args: argparse.Namespace) -> int:
 
     rx_text.bind("<Button-3>", show_rx_menu)
 
+    # ── Find bar ─────────────────────────────────────────────────────
+    # Highlight tags for search hits. find_all marks every match; the
+    # brighter find_current marks the one the view is parked on.
+    rx_text.tag_config("find_all", background="#fff176", foreground="#000")
+    rx_text.tag_config("find_current", background="#ff9800", foreground="#000")
+
+    find_frame = ttk.Frame(root, padding=(8, 2, 8, 2))  # packed on demand
+    ttk.Label(find_frame, text="Find:").pack(side=tk.LEFT)
+    find_var = tk.StringVar()
+    find_entry = ttk.Entry(find_frame, textvariable=find_var, width=32)
+    find_entry.pack(side=tk.LEFT, padx=(4, 4))
+    find_prev_btn = ttk.Button(find_frame, text="◀", width=3)
+    find_prev_btn.pack(side=tk.LEFT)
+    find_next_btn = ttk.Button(find_frame, text="▶", width=3)
+    find_next_btn.pack(side=tk.LEFT, padx=(0, 6))
+    find_case_var = tk.BooleanVar(value=False)
+    find_case_chk = ttk.Checkbutton(find_frame, text="Match case",
+                                    variable=find_case_var)
+    find_case_chk.pack(side=tk.LEFT)
+    find_count_var = tk.StringVar(value="")
+    ttk.Label(find_frame, textvariable=find_count_var,
+              foreground="#666").pack(side=tk.LEFT, padx=(8, 0))
+    find_close_btn = ttk.Button(find_frame, text="✕", width=3)
+    find_close_btn.pack(side=tk.RIGHT)
+
+    # State kept in a dict so the nested helpers can mutate it without a
+    # thicket of `nonlocal` declarations. "hits" is a list of (start, end)
+    # Text indices; "idx" is the currently-selected hit, -1 when none.
+    find_state = {"hits": [], "idx": -1, "visible": False}
+
+    def clear_find_tags() -> None:
+        rx_text.tag_remove("find_all", "1.0", tk.END)
+        rx_text.tag_remove("find_current", "1.0", tk.END)
+
+    def highlight_current() -> None:
+        hits = find_state["hits"]
+        rx_text.tag_remove("find_current", "1.0", tk.END)
+        if not hits:
+            find_count_var.set("no matches" if find_var.get() else "")
+            return
+        i = find_state["idx"] % len(hits)
+        find_state["idx"] = i
+        start, end = hits[i]
+        rx_text.tag_add("find_current", start, end)
+        rx_text.see(start)
+        find_count_var.set(f"{i + 1}/{len(hits)}")
+
+    def update_find(*_: object) -> None:
+        clear_find_tags()
+        find_state["hits"] = []
+        find_state["idx"] = -1
+        query = find_var.get()
+        if not query:
+            find_count_var.set("")
+            return
+        nocase = not find_case_var.get()
+        count = tk.IntVar()
+        pos = "1.0"
+        while True:
+            pos = rx_text.search(query, pos, stopindex=tk.END,
+                                 nocase=nocase, count=count)
+            if not pos:
+                break
+            length = count.get()
+            if length <= 0:
+                break
+            end = f"{pos}+{length}c"
+            rx_text.tag_add("find_all", pos, end)
+            find_state["hits"].append((pos, end))
+            pos = end
+        if find_state["hits"]:
+            find_state["idx"] = 0
+        highlight_current()
+
+    def find_next(*_: object) -> str:
+        if not find_state["hits"]:
+            update_find()
+            return "break"
+        find_state["idx"] = (find_state["idx"] + 1) % len(find_state["hits"])
+        highlight_current()
+        return "break"
+
+    def find_prev(*_: object) -> str:
+        if not find_state["hits"]:
+            update_find()
+            return "break"
+        find_state["idx"] = (find_state["idx"] - 1) % len(find_state["hits"])
+        highlight_current()
+        return "break"
+
+    def show_find(*_: object) -> str:
+        if not find_state["visible"]:
+            find_frame.pack(fill=tk.X, before=bottom)
+            find_state["visible"] = True
+        # Prefill from a single-line selection, if any, for a quick "find
+        # what I just highlighted" flow.
+        try:
+            sel = rx_text.get(tk.SEL_FIRST, tk.SEL_LAST)
+            if sel and "\n" not in sel:
+                find_var.set(sel)
+        except tk.TclError:
+            pass
+        find_entry.focus_set()
+        find_entry.select_range(0, tk.END)
+        update_find()
+        return "break"
+
+    def hide_find(*_: object) -> str:
+        if find_state["visible"]:
+            find_frame.pack_forget()
+            find_state["visible"] = False
+        clear_find_tags()
+        find_count_var.set("")
+        send_entry.focus_set()
+        return "break"
+
+    find_var.trace_add("write", update_find)
+    find_case_var.trace_add("write", update_find)
+    find_next_btn.config(command=find_next)
+    find_prev_btn.config(command=find_prev)
+    find_close_btn.config(command=hide_find)
+    find_entry.bind("<Return>", find_next)
+    find_entry.bind("<Shift-Return>", find_prev)
+    find_entry.bind("<Escape>", hide_find)
+    root.bind("<Control-f>", show_find)
+
     def refresh_devices() -> None:
         device_combo["values"] = [os.path.basename(p)
                                   for p, _ in list_by_id()]
@@ -798,20 +925,60 @@ def run_gui(args: argparse.Namespace) -> int:
             now_paused = cfg["paused"]
         pause_btn.config(text="Resume" if now_paused else "Pause")
 
+    # Shell-style send history: Up/Down step through previously sent lines.
+    send_history: list[str] = []
+    hist_state = {"idx": None, "draft": ""}  # idx None == not browsing history
+
     def do_send(*_: object) -> None:
         text = send_var.get()
         eol_bytes = EOL_MAP[eol_var.get()]
         payload = text.encode("utf-8", errors="replace") + eol_bytes
         tx_q.put(payload)
+        # Record in history: skip blanks and consecutive duplicates, cap at 50.
+        if text and (not send_history or send_history[-1] != text):
+            send_history.append(text)
+            del send_history[:-HISTORY_MAX]
+        hist_state["idx"] = None
+        hist_state["draft"] = ""
         send_var.set("")
+
+    def history_prev(*_: object) -> str:
+        if not send_history:
+            return "break"
+        if hist_state["idx"] is None:
+            hist_state["draft"] = send_var.get()
+            hist_state["idx"] = len(send_history) - 1
+        elif hist_state["idx"] > 0:
+            hist_state["idx"] -= 1
+        send_var.set(send_history[hist_state["idx"]])
+        send_entry.icursor(tk.END)
+        return "break"
+
+    def history_next(*_: object) -> str:
+        if hist_state["idx"] is None:
+            return "break"
+        if hist_state["idx"] < len(send_history) - 1:
+            hist_state["idx"] += 1
+            send_var.set(send_history[hist_state["idx"]])
+        else:
+            # Stepped past the newest entry: restore the in-progress draft.
+            hist_state["idx"] = None
+            send_var.set(hist_state["draft"])
+        send_entry.icursor(tk.END)
+        return "break"
 
     apply_btn.config(command=apply_changes)
     pause_btn.config(command=toggle_pause)
     clear_btn.config(command=clear_rx)
     send_btn.config(command=do_send)
     send_entry.bind("<Return>", do_send)
+    send_entry.bind("<KP_Enter>", do_send)
+    send_entry.bind("<Up>", history_prev)
+    send_entry.bind("<Down>", history_next)
     device_combo.bind("<Return>", apply_changes)
+    device_combo.bind("<KP_Enter>", apply_changes)
     baud_entry.bind("<Return>", apply_changes)
+    baud_entry.bind("<KP_Enter>", apply_changes)
     baud_entry.bind("<<ComboboxSelected>>", apply_changes)
     device_combo.bind("<<ComboboxSelected>>", apply_changes)
     device_combo.bind("<Button-1>", lambda _e: refresh_devices())
@@ -823,6 +990,11 @@ def run_gui(args: argparse.Namespace) -> int:
     file_menu.add_separator()
     file_menu.add_command(label="Quit", command=lambda: on_close())
     menubar.add_cascade(label="File", menu=file_menu)
+
+    edit_menu = tk.Menu(menubar, tearoff=0)
+    edit_menu.add_command(label="Find...", accelerator="Ctrl+F",
+                          command=show_find)
+    menubar.add_cascade(label="Edit", menu=edit_menu)
 
     options_menu = tk.Menu(menubar, tearoff=0)
     options_menu.add_checkbutton(label="Show timestamps", variable=ts_var)

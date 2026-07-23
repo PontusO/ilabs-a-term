@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=a-term
+GenericName=Serial Terminal
+Comment=Follow-the-port serial terminal that reconnects automatically
+Exec=a-term --gui
+Terminal=false
+Icon=utilities-terminal
+Categories=Development;Electronics;Utility;
+Keywords=serial;terminal;arduino;uart;tty;usb;
+StartupNotify=true
