@@ -7,6 +7,6 @@ Comment=Follow-the-port serial terminal that reconnects automatically
 Exec=a-term --gui
 Terminal=false
 Icon=utilities-terminal
-Categories=Development;Electronics;Utility;
+Categories=Development;Electronics;
 Keywords=serial;terminal;arduino;uart;tty;usb;
 StartupNotify=true
